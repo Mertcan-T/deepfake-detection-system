@@ -21,5 +21,5 @@ Bu proje, üretken yapay zeka (Generative AI) teknolojileri kullanılarak oluşt
 
 ## Teknik Altyapı
 * **Dil:** Python 3.x
-* **Kütüphaneler:** NumPy, OpenCV, TensorFlow/Keras
+* **Kütüphaneler:** NumPy, OpenCV, PyTorch
 * **Mimari:** Convolutional Neural Networks (CNN) & Transfer Learning

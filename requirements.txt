@@ -1,35 +1,27 @@
-# --- Deepfake Detection Project Requirements ---
-# Python 3.11 Önerilen Sürümdür
+# --- Deepfake Detection Final Pro Stack ---
+# Python 3.11 tabanlı - Araştırma ve Ekip Uyumu Odaklı
 
-# 1. Temel Sayısal Hesaplama ve Veri Yönetimi
+# 1. Sayısal Hesaplama
 numpy==1.26.4
-pandas==2.2.1
 scipy==1.12.0
+pandas==2.2.1
 
-# 2. Görüntü ve Video İşleme (OpenCV)
-opencv-python==4.9.0.80
+# 2. Görüntü İşleme (Çakışma önlenmiş versiyon)
 opencv-contrib-python==4.9.0.80
 pillow==10.2.0
+albumentations==1.4.0
 
-# 3. Derin Öğrenme ve Model Eğitimi (TensorFlow & Keras)
-# Not: TF 2.15+, Python 3.11 ile tam uyumlu ve hızlı çalışır.
-tensorflow==2.15.0
-keras==2.15.0
+# 3. Derin Öğrenme (Modern Araştırma Standartı)
+torch==2.2.1
+torchvision==0.17.1
 
-# 4. Yüz Tespiti ve Biyometrik Analiz
-# MediaPipe: Hızlı ve kurulumu en kolay yüz tespiti aracıdır.
-# MTCNN: Taslakta belirttiğimiz daha detaylı analizler için eklenmiştir.
-mediapipe==0.10.11
-mtcnn==0.1.1
-face-recognition==1.3.0
+# 4. Yüz Tespiti ve Hazır Modeller
+# facenet-pytorch: İçinde en hızlı MTCNN ve InceptionResnet modellerini barındırır.
+facenet-pytorch==2.6.0
+insightface==0.7.3
 
-# 5. Makine Öğrenmesi Araçları ve Performans Metrikleri
-scikit-learn==1.4.1.post1
-matplotlib==3.8.3
-seaborn==0.13.2
-
-# 6. Yardımcı Mühendislik Araçları
-# tqdm: Döngülerde işlem çubuğu gösterir (Video işlerken hayat kurtarır).
+# 5. Yardımcı Mühendislik Araçları
 tqdm==4.66.2
+matplotlib==3.8.3
+scikit-learn==1.4.1.post1
 python-dotenv==1.0.1
-pyyaml==6.0.1

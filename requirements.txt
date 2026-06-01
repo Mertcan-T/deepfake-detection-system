@@ -1,10 +1,17 @@
-# Modern PyTorch (Python 3.13 uyumlu)
+# --- Deepfake Detection Final Pro Stack ---
+
+# PyTorch'a her zaman CUDA (Ekran Kartı) versiyonunu indirmesini zorunlu kılar:
+--extra-index-url https://download.pytorch.org/whl/cu124
+
+# Modern PyTorch (Python 3.13 ve GPU uyumlu)
 torch>=2.6.0
 torchvision>=0.21.0
 timm==1.0.27
 
-# MTCNN ve Görüntü İşleme
+# MTCNN (Sürüm çakışmasını önlemek için sürüm numarası kasten kaldırıldı)
 facenet-pytorch
+
+# Görüntü İşleme
 opencv-python==4.11.0.86
 pillow==10.2.0
 

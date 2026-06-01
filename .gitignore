@@ -40,22 +40,18 @@ venv.bak/
 .cursorignore
 
 # === İşletim Sistemi Dosyaları ===
-# Windows spesifik (Bursa'daki çalışmalarınızda oluşan yerel sistem dosyaları)
 Thumbs.db
 desktop.ini
-# macOS spesifik
 .DS_Store
 
 # === Deepfake Projesi Özel Eklemeleri ===
 
 # 1. Veri Setleri
-# Binlerce video içeren veri setleri GitHub limitlerini aşar
 /data/
 /datasets/
 /raw_data/
 
 # 2. Model Ağırlıkları
-# Eğitilen modellerin (.h5, .pth, .weights) boyutları çok büyüktür
 *.h5
 *.pth
 *.weights
@@ -63,17 +59,30 @@ desktop.ini
 *.onnx
 
 # 3. Videolar ve Çıktılar
-# src/videolar altındaki ham videoları dışlıyoruz
 src/videolar/*.mp4
 src/videolar/*.avi
 src/videolar/*.mov
-
-# Örnek senaryonun işlenmiş halini GitHub'da göstermek istersen
-# bu satırın başına '#' koyarak istisna tutabilirsin:
-# !src/videolar/Deepfake_Example_islenmis_mtcnn.mp4
 
 # 4. Geçici Dosyalar ve Loglar
 /frames/
 /output/
 /temp/
 *.log
+
+# === EKLENDİ: Jupyter Notebook Artıkları ===
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# === EKLENDİ: Pytest / Test Artıkları ===
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# === EKLENDİ: Hugging Face Model Cache ===
+# timm ve transformers kütüphanelerinin indirdiği önbellek dosyaları
+.cache/
+~/.cache/huggingface/
+
+# === EKLENDİ: Streamlit Önbelleği ===
+.streamlit/

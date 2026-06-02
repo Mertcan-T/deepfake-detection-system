@@ -66,7 +66,11 @@ Sistemde yalnızca ortalama skor kullanılmamaktadır.
 Daha kararlı sonuçlar elde etmek amacıyla:
 
 * Ortalama Skor (Mean)
+<<<<<<< HEAD
 * 85\. Persentil (P85)
+=======
+*  85. Persentil (P85)
+>>>>>>> d9c75b40f01341908ca59a4411aa0cbdfcbed0d1
 
 birlikte değerlendirilmektedir.
 

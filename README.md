@@ -63,17 +63,17 @@ analiz ederek görüntünün gerçek veya sahte olma olasılığını hesaplar.
 
 Sistemde yalnızca ortalama skor kullanılmamaktadır.
 
-Daha kararlı sonuçlar elde etmek amacıyla:
+Hareket bulanıklığı (motion blur) kaynaklı anlık yanlış alarmları (false-positive) filtrelemek ve daha kararlı sonuçlar elde etmek amacıyla:
 
 * Ortalama Skor (Mean)
-* 90. Persentil (P90)
+* 85. Persentil (P85)
 
 birlikte değerlendirilmektedir.
 
 Final karar skoru:
 
 ```text
-Final Skor = (0.7 × P90) + (0.3 × Ortalama)
+Final Skor = (0.4 × P85) + (0.6 × Ortalama)
 ```
 
 Bu yaklaşım kısa süreli manipülasyonların gözden kaçmasını önlemeye yardımcı olmaktadır.
@@ -108,7 +108,7 @@ Bu yaklaşım kısa süreli manipülasyonların gözden kaçmasını önlemeye y
 * Canlı skor takibi
 * İşlenmiş video çıktısı
 * Savitzky-Golay sinyal filtreleme
-* Hibrit P90 karar mekanizması
+* Hibrit P85 karar mekanizması
 * VRAM koruma sistemi
 * Tarayıcı çökmesini önleyen UI optimizasyonları
 
@@ -191,7 +191,7 @@ streamlit run src/app.py
 3. MTCNN ile yüz tespiti yapılır.
 4. Tespit edilen yüzler Xception41 modeline gönderilir.
 5. Deepfake olasılıkları hesaplanır.
-6. Hibrit P90 karar mekanizması uygulanır.
+6. Hibrit P85 karar mekanizması uygulanır.
 7. Sonuçlar grafik ve işlenmiş video olarak kullanıcıya sunulur.
 
 ---

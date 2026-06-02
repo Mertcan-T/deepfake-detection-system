@@ -30,7 +30,8 @@ V8 -> V17 (Stabilite Dönemi):
 V18 -> FINAL (Üretim / MLOps Dönemi):
 - UI Throttling: Streamlit'in arayüzü yenilerken RAM şişirip tarayıcıyı çökertmesi önlendi.
 - Çözünürlük Zırhı: 1080p/4K videoların sistemi kitlememesi için max 1280px genişlik sınırı getirildi.
-- Hibrit P90 Skorlama: Kısa deepfake anlarını kaçırmamak için 90. Persentil ağırlıklı karar algoritması yazıldı.
+- Hibrit P85 Skorlama (False-Positive Fix): Kısa deepfake anlarını kaçırmamak ancak motion blur 
+  gibi anlık hatalara aldanmamak için 85. Persentil ve Ortalama dengeli karar algoritması yazıldı.
 - Domain Shift Koruması (Altın Oran): MTCNN yüz kadrajlarına %10 Padding (Marj) eklenerek 
   deepfake maske birleşim yerleri (çene, alın) analize dahil edildi. Sıfıra sıfır kesim hatası çözüldü.
 =========================================================================================
@@ -75,7 +76,7 @@ st.title("Yapay Zeka Tabanlı Deepfake Tespit Sistemi")
 
 st.markdown("""
 ### Sistem Mimarisi
-- **Akademik Model:** Özgüven Kalibrasyonu (T=1.0) ve Hibrit P90 Skorlama.
+- **Akademik Model:** Özgüven Kalibrasyonu (T=1.0) ve Hibrit P85 Skorlama.
 - **Dinamik Kadraj (Margin):** Maske sınırlarını yakalamak için %10 güvenlik paylı yüz takibi.
 - **Donanım Zırhı:** Tensor Core (FP16) aktivasyonu ve tarayıcı Throttling koruması.
 """)
@@ -158,7 +159,12 @@ if model is None:
 else:
     st.sidebar.markdown("---")
     st.sidebar.success("Sistem Hazır")
-    st.sidebar.markdown(f"Mimari: xception41\nDoğruluk Oranı: %{val_acc*100:.2f}\nAktif Ünite: {str(DEVICE).upper()}")
+    st.sidebar.markdown(
+        f"**Mimari:** xception41<br>"
+        f"**Doğruluk Oranı:** %{val_acc*100:.2f}<br>"
+        f"**Aktif Ünite:** {str(DEVICE).upper()}", 
+        unsafe_allow_html=True
+    )
 
 # Görüntüleri Xception modelinin beklediği boyuta ve matris yapısına çevirir.
 donusum = transforms.Compose([
@@ -380,12 +386,12 @@ if yuklenen_dosya is not None:
             st.subheader("Akademik Analiz Raporu")
             if len(tum_skorlar) > 0:
                 mean_skor = float(np.mean(tum_skorlar))
-                percentile_90_skor = float(np.percentile(tum_skorlar, 90))
+                percentile_85_skor = float(np.percentile(tum_skorlar, 85))
                 
-                # HİBRİT P90 SKORLAMASI: Basit bir ortalama almak, 3 saniyelik bir deepfake 
-                # eylemini yutup göz ardı edebilir. Bu formül, en yüksek riskli %10'luk dilime 
-                # (P90) ağırlık vererek manipülasyon piklerini garantili olarak yakalar.
-                final_skor = (0.7 * percentile_90_skor) + (0.3 * mean_skor)
+                # HİBRİT P85 SKORLAMASI GÜNCELLEMESİ (Daha Dengeli)
+                # Videonun geneline (%60) daha fazla, anlık risklere (%40) daha az ağırlık verilir.
+                # Böylece motion blur kaynaklı anlık yanlış alarmlar (false positive) engellenir.
+                final_skor = (0.4 * percentile_85_skor) + (0.6 * mean_skor)
                 max_skor = float(np.max(tum_skorlar))
                 
                 gercek_ai_fps = (len(tum_skorlar)) / ai_islem_suresi if ai_islem_suresi > 0 else 0
@@ -396,7 +402,7 @@ if yuklenen_dosya is not None:
                     st.success(f"GÜVENLİ: Belirgin bir manipülasyon tespit edilmedi. (Skor: %{final_skor:.1f})")
 
                 c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Genel Skor (Hibrit P90)", f"%{final_skor:.1f}")
+                c1.metric("Genel Skor (Hibrit P85)", f"%{final_skor:.1f}")
                 c2.metric("Maksimum Anlık Skor", f"%{max_skor:.1f}")
                 c3.metric("Saf AI Çıkarım Hızı", f"{gercek_ai_fps:.1f} FPS")
                 c4.metric("Toplam Sistem Hızı", f"{sistem_fps:.1f} FPS")

@@ -7,7 +7,7 @@ import os
 import random
 
 MODEL_YOLU = r"C:\Users\M.T\Desktop\calismalarim\DeepFake Python\deepfake-detection-system\src\deepfake_model.pth"
-TEST_DIZINI = r"C:\Users\M.T\Desktop\calismalarim\DeepFake Python\deepfake-detection-system\src\deepfake_data"
+TEST_DIZINI = r"C:\Users\M.T\Desktop\calismalarim\DeepFake Python\deepfake_data"
 
 checkpoint = torch.load(MODEL_YOLU, map_location="cpu")
 model = timm.create_model("xception41", pretrained=False, num_classes=2)

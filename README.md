@@ -63,10 +63,10 @@ analiz ederek görüntünün gerçek veya sahte olma olasılığını hesaplar.
 
 Sistemde yalnızca ortalama skor kullanılmamaktadır.
 
-Hareket bulanıklığı (motion blur) kaynaklı anlık yanlış alarmları (false-positive) filtrelemek ve daha kararlı sonuçlar elde etmek amacıyla:
+Daha kararlı sonuçlar elde etmek amacıyla:
 
 * Ortalama Skor (Mean)
-* 85. Persentil (P85)
+* 85\. Persentil (P85)
 
 birlikte değerlendirilmektedir.
 

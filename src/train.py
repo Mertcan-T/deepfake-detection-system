@@ -8,12 +8,20 @@ DEĞİŞİKLİK GEÇMİŞİ:
            EarlyStopping, Checkpoint formatı, PowerShell buffer.
   v2 → v3: RESUME özelliği, optimizer/scheduler state kaydı.
   v3 → v4: AMP (FP16) eklendi, GradScaler, cudnn.benchmark.
-  v4 → v5 (FİNAL): 
-  - GradScaler import düzeltildi: torch.cuda.amp → torch.amp
-  - Optimizer Device Uyuşmazlığı Çözüldü: Model, checkpoint 
-    yüklenmeden ÖNCE GPU'ya taşındı. Böylece optimizer state 
-    yüklendiğinde, tensörlerin CPU/GPU çakışması yapması 
-    mimari olarak tamamen engellendi.
+  v4 → v5 (FİNAL): GradScaler import düzeltildi, optimizer device uyuşmazlığı çözüldü.
+  v5 → v6 (GELİŞTİRİLMİŞ):
+    - EPOCHS: 5 → 15 (daha iyi genelleme)
+    - Label Smoothing: CrossEntropyLoss(label_smoothing=0.1) eklendi.
+      Model aşırı özgüvenli "hard" tahminler yerine daha kalibre edilmiş
+      olasılıklar üretiyor. Overfitting'e karşı implicit regularization.
+    - Güçlendirilmiş Augmentation:
+        * GaussianBlur → Video sıkıştırma artefaktlarını ve motion blur'u simüle eder.
+        * RandomErasing → Kısmi yüz kapanmalarına (occlusion) karşı dayanıklılık.
+        * RandomGrayscale → Renk bağımsız özellikler öğrenmesini teşvik eder.
+        * Daha güçlü ColorJitter parametreleri.
+    - Scheduler: ReduceLROnPlateau → CosineAnnealingWarmRestarts
+      Periyodik LR artışları lokal minimumlardan çıkmayı sağlar.
+      Resume ile uyumludur.
 
 KULLANIM:
   python train.py           # Normal eğitim
@@ -36,9 +44,11 @@ sys.stdout.reconfigure(line_buffering=True)
 # ─────────────────────────────────────────────
 #  AYARLAR
 # ─────────────────────────────────────────────
-VERI_DIZINI = r"C:\Users\M.T\Desktop\deepfake_data\Dataset"
-MODEL_KAYIT = r"C:\Users\M.T\Desktop\calismalarim\DeepFake Python\deepfake-detection-system\src\deepfake_model.pth"
-EPOCHS      = 5
+VERI_DIZINI = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "deepfake_data", "Dataset"))
+MODEL_KAYIT = os.path.join(os.path.dirname(__file__), "deepfake_model.pth")
+
+# v6: Epoch sayısı artırıldı — transfer learning ile 15 epoch yeterli genelleme sağlar
+EPOCHS      = 15
 BATCH_SIZE  = 32
 LR          = 1e-4
 IMG_SIZE    = 299
@@ -50,25 +60,45 @@ RESUME      = "--resume" in sys.argv
 if torch.cuda.is_available():
     torch.backends.cudnn.benchmark = True
 
-print(f"\n{'='*50}")
+print(f"\n{'='*55}")
 print(f"  Cihaz : {DEVICE}")
 if torch.cuda.is_available():
     print(f"  GPU   : {torch.cuda.get_device_name(0)}")
     print(f"  VRAM  : {torch.cuda.get_device_properties(0).total_memory // 1024**2} MB")
 print(f"  AMP   : {'Aktif (FP16)' if USE_AMP else 'Pasif (FP32)'}")
 print(f"  Mod   : {'RESUME (kalınan yerden devam)' if RESUME else 'YENİ EĞİTİM'}")
-print(f"{'='*50}\n")
+print(f"  Epoch : {EPOCHS}")
+print(f"{'='*55}\n")
 
 # ─────────────────────────────────────────────
-#  VERİ
+#  VERİ — v6 Güçlendirilmiş Augmentation
 # ─────────────────────────────────────────────
 egitim_donusum = transforms.Compose([
-    transforms.Resize((IMG_SIZE, IMG_SIZE)),
+    # Hafif büyütme sonrası merkez kırpma → pozisyon çeşitliliği
+    transforms.Resize((320, 320)),
+    transforms.RandomCrop(IMG_SIZE),
+
     transforms.RandomHorizontalFlip(),
-    transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.1),
+
+    # v6: Daha güçlü renk dönüşümleri
+    transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05),
+
+    # v6 YENİ: Motion blur ve video sıkıştırma artefaktlarını simüle eder.
+    # Eğitim veri seti statik görüntülerden oluştuğundan bu augmentation
+    # video karelerine domain shift'i azaltır.
+    transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
+
+    # v6 YENİ: Renk bağımsız özellikler öğrenmesini teşvik eder (%5 olasılıkla)
+    transforms.RandomGrayscale(p=0.05),
+
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+
+    # v6 YENİ: Kısmi yüz kapanmalarına (occlusion) karşı dayanıklılık.
+    # Gerçek video senaryolarında eller, saç veya nesneler yüzü kısmen kapatabilir.
+    transforms.RandomErasing(p=0.10, scale=(0.02, 0.12), ratio=(0.3, 3.3)),
 ])
+
 deger_donusum = transforms.Compose([
     transforms.Resize((IMG_SIZE, IMG_SIZE)),
     transforms.ToTensor(),
@@ -87,12 +117,22 @@ print(f"Doğrulama      : {len(dogrulama_veri):,} görüntü\n")
 # ─────────────────────────────────────────────
 #  MODEL, OPTIMIZER, SCALER
 # ─────────────────────────────────────────────
-model      = timm.create_model("xception41", pretrained=not RESUME, num_classes=2)
-kayip_fonk = nn.CrossEntropyLoss()
-optimizer  = optim.Adam(model.parameters(), lr=LR, weight_decay=1e-5)
-scheduler  = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=2)
+model = timm.create_model("xception41", pretrained=not RESUME, num_classes=2)
 
-# torch.amp.GradScaler kullanıldı
+# v6 YENİ: Label Smoothing
+# Modelin "hard" 0/1 tahminler yerine kalibre edilmiş olasılıklar üretmesini sağlar.
+# epsilon=0.1 → hedef etiketler [0.05, 0.95] aralığına yumuşatılır.
+# Implicit regularization olarak çalışır; overfitting'i azaltır.
+kayip_fonk = nn.CrossEntropyLoss(label_smoothing=0.1)
+
+optimizer  = optim.Adam(model.parameters(), lr=LR, weight_decay=1e-5)
+
+# v6 YENİ: CosineAnnealingWarmRestarts
+# ReduceLROnPlateau'ya göre avantajı: periyodik LR artışları lokal minimumlardan
+# çıkmayı sağlar. T_0=5 → her 5 epoch'ta bir LR sıfırlanır.
+# Resume ile uyumludur (scheduler state checkpoint'e kaydedilir).
+scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=1e-6)
+
 scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
 
 # ─────────────────────────────────────────────
@@ -114,7 +154,7 @@ if RESUME and os.path.exists(MODEL_KAYIT):
     model.load_state_dict(checkpoint["model_state"])
     en_iyi_acc = checkpoint.get("val_acc", 0.0)
 
-    # 2. Optimizer (Model GPU'da olduğu için artık sorunsuz yüklenir)
+    # 2. Optimizer
     if "optimizer_state" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state"])
         print("  ✓ Optimizer state yüklendi")
@@ -188,7 +228,8 @@ for epoch in range(baslangic_epoch, EPOCHS + 1):
           f"LR: {mevcut_lr:.2e} | "
           f"Süre: {sure/60:.1f}dk", flush=True)
 
-    scheduler.step(val_acc)
+    # CosineAnnealingWarmRestarts her epoch sonunda güncellenir
+    scheduler.step(epoch + (1 / len(egitim_yukleme)))
 
     if val_acc > en_iyi_acc:
         en_iyi_acc = val_acc
@@ -207,8 +248,8 @@ for epoch in range(baslangic_epoch, EPOCHS + 1):
         }, MODEL_KAYIT)
         print(f"  ✓ En iyi model kaydedildi → Val Acc: %{val_acc*100:.2f}", flush=True)
 
-print(f"\n{'='*50}")
+print(f"\n{'='*55}")
 print(f"  Eğitim tamamlandı!")
 print(f"  En iyi Val Accuracy : %{en_iyi_acc*100:.2f}")
 print(f"  Model               : {MODEL_KAYIT}")
-print(f"{'='*50}")
+print(f"{'='*55}")

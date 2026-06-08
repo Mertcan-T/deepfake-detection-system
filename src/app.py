@@ -1,184 +1,67 @@
 """
-=========================================================================================
-  Deepfake Tespit Sistemi — Streamlit Arayüzü — FINAL SÜRÜM
-=========================================================================================
+Deepfake Tespit Sistemi - Ana Yönetici Modülü (app.py)
 
-GELİŞTİRME GEÇMİŞİ VE MİMARİ GÜNCELLEMELER (V1 -> FINAL):
-
-V1 -> V2:
-- Model Değişimi: InceptionResnetV1 yerine FaceForensics++ literatüründe deepfake tespiti 
-  için en yüksek başarıyı veren Xception (xception41) mimarisine geçildi.
-- Temel Hata Giderimleri: Pointer hataları, geçici dosya (temp) sızıntıları düzeltildi.
-
-V3 -> V4:
-- MTCNN Filtrelemesi: Arka plandaki nesnelerin yüz sanılmasını önlemek için boyut ve güven sınırı eklendi.
-
-V4 -> V6:
-- Bölgesel Hassasiyet (Regional Sensitivity): Kadrajın tam merkezindeki yüzler için daha 
-  sıkı bir güven eşiği (+0.10) uygulanırken, kenarlardaki yüzler için tolerans artırıldı.
-
-V6 -> V8:
-- Donanım Optimizasyonu: Sıralı işlem yerine Batch Inference mantığına geçildi. 
-- Mixed Precision (AMP): VRAM kullanımını yarı yarıya düşürmek için torch.autocast (FP16) koda eklendi.
-- Özgüven Kalibrasyonu: Modelin aşırı özgüvenli yanlış kararlarını törpülemek için Softmax (T=1.0) eklendi.
-
-V8 -> V17 (Stabilite Dönemi):
-- Sinyal İşleme: Grafikteki dalgalanmaları gidermek için Savitzky-Golay filtresi eklendi.
-- Renk Uzayı Düzeltmesi: Streamlit (RGB) ve OpenCV (BGR) renk çakışmaları giderildi.
-- Forward-Fill Mantığı: Yüzün anlık kaybolduğu karelerde grafiğin 0'a çakılması önlendi.
-
-V18 -> FINAL (Üretim / MLOps Dönemi):
-- UI Throttling: Streamlit'in arayüzü yenilerken RAM şişirip tarayıcıyı çökertmesi önlendi.
-- Çözünürlük Zırhı: 1080p/4K videoların sistemi kitlememesi için max 1280px genişlik sınırı getirildi.
-- Hibrit P85 Skorlama (False-Positive Fix): Kısa deepfake anlarını kaçırmamak ancak motion blur 
-  gibi anlık hatalara aldanmamak için 85. Persentil ve Ortalama dengeli karar algoritması yazıldı.
-- Domain Shift Koruması (Altın Oran): MTCNN yüz kadrajlarına %10 Padding (Marj) eklenerek 
-  deepfake maske birleşim yerleri (çene, alın) analize dahil edildi. Sıfıra sıfır kesim hatası çözüldü.
-=========================================================================================
+Bu dosya uygulamanın giriş noktasıdır. Streamlit arayüzünü başlatır, yan menü ayarlarını
+kullanıcıdan alır, modelleri belleğe yükler ve videonun `video_processor.py` üzerinden 
+işlenmesini tetikler.
 """
-
-import os
-import cv2
-import time
-import torch
-import tempfile
-import numpy as np
 import streamlit as st
-import timm
-import plotly.graph_objects as go
-import torch.nn.functional as F
+import tempfile
+import json
+import numpy as np
 
-from facenet_pytorch import MTCNN
-from torchvision import transforms
+from config import DEVICE, TEMPERATURE, UI_GUNCELLEME_FREKANSI
+from utils import temporal_tutarsizlik_skoru
+from models import modeli_yukle, mtcnn_yukle, donusum
+from video_processor import process_video
+from ui import render_css, render_header, plot_timeline
 
-# Sinyal pürüzsüzleştirme filtresi. Scipy yoksa sistem çökmez, esnek davranır.
-try:
-    from scipy.signal import savgol_filter
-    SCIPY_AVAILABLE = True
-except ImportError:
-    SCIPY_AVAILABLE = False
+st.set_page_config(
+    page_title="Deepfake Tespit Sistemi",
+    layout="wide",
+    page_icon="O"
+)
 
-# 1. DONANIM VE MİMARİ AYARLARI
-if torch.cuda.is_available():
-    DEVICE = torch.device("cuda")
-    # cuDNN Benchmark: Giriş boyutları sabitse, NVIDIA GPU'nun en hızlı algoritmayı 
-    # arka planda seçerek işlemi hızlandırmasını sağlar.
-    torch.backends.cudnn.benchmark = True 
-    # AMP (Automatic Mixed Precision): FP32 yerine FP16 kullanarak VRAM tasarrufu sağlar.
-    USE_AMP = True                        
-else:
-    DEVICE = torch.device("cpu")
-    USE_AMP = False
+render_css()
+render_header()
 
-# 2. STREAMLIT SAYFA YAPILANDIRMASI
-st.set_page_config(page_title="Deepfake Tespit Sistemi", layout="wide")
-st.title("Yapay Zeka Tabanlı Deepfake Tespit Sistemi")
+st.sidebar.header("Sistem Ayarlari")
 
-st.markdown("""
-### Sistem Mimarisi
-- **Akademik Model:** Özgüven Kalibrasyonu (T=1.0) ve Hibrit P85 Skorlama.
-- **Dinamik Kadraj (Margin):** Maske sınırlarını yakalamak için %10 güvenlik paylı yüz takibi.
-- **Donanım Zırhı:** Tensor Core (FP16) aktivasyonu ve tarayıcı Throttling koruması.
-""")
-
-# 3. YAN MENÜ (SIDEBAR) KULLANICI AYARLARI
-st.sidebar.header("Sistem Ayarları")
-
-esik_degeri = st.sidebar.slider("Deepfake Eşik Değeri", 0.0, 1.0, 0.50, 0.05)
-frame_atlama = st.sidebar.slider("Frame Skip (Analiz Hızı)", 1, 15, 5, 1)
+esik_degeri     = st.sidebar.slider("Deepfake Esik Degeri", 0.0, 1.0, 0.50, 0.05)
+frame_atlama    = st.sidebar.slider("Frame Skip (Analiz Hizi)", 1, 15, 5, 1)
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("**Gelişmiş Radar Ayarları**")
-min_yuz_boyutu = st.sidebar.slider("Minimum Yüz Boyutu (px)", 20, 200, 40, 10)
-temel_mtcnn_guven = st.sidebar.slider("Temel MTCNN Güveni", 0.60, 0.99, 0.75, 0.01)
+st.sidebar.markdown("**Gelismiş Radar Ayarlari**")
+min_yuz_boyutu     = st.sidebar.slider("Minimum Yuz Boyutu (px)", 20, 200, 40, 10)
+temel_mtcnn_guven  = st.sidebar.slider("Temel MTCNN Guveni", 0.60, 0.99, 0.75, 0.01)
 
-# 4. GİZLİ SİSTEM SABİTLERİ VE PARAMETRELERİ
-MODEL_YOLU = os.path.join(os.path.dirname(__file__), "deepfake_model.pth")
-TEMPERATURE = 1.0          # Modelin kararlarını yumuşatan Softmax sabiti
-KAYIP_LIMITI = 15          # Yüz art arda 15 kare kaybolursa skor hafızasını siler
-MAX_BATCH_FACE = 6         # Aynı karede maksimum işlenecek yüz (VRAM Taşmasını önler)
-UI_GUNCELLEME_FREKANSI = 2 # Tarayıcının kilitlenmesini önlemek için çizim seyreltmesi
-
-# 5. YARDIMCI FONKSİYONLAR
-def skora_gore_renk(skor, esik, bgr=False):
-    """
-    Kullanıcının belirlediği dinamik Eşik değerine göre, sınırın altı ve üstü 
-    için renk paletini (RGB veya BGR) belirler. Koyu/Açık ton geçişleri sağlar.
-    """
-    if skor >= esik:
-        if skor >= esik + 0.15:
-            r, g, b = 255, 50, 50   # Kırmızı (Kesin Sahte)
-        else:
-            r, g, b = 255, 130, 50  # Koyu Turuncu (Sınıra yakın Sahte)
-    else:
-        if skor < esik - 0.15:
-            r, g, b = 50, 220, 50   # Koyu Yeşil (Kesin Gerçek)
-        else:
-            r, g, b = 160, 220, 50  # Sarımsı Yeşil (Sınıra yakın Gerçek)
-    return (b, g, r) if bgr else (r, g, b)
-
-def temporal_tutarsizlik_skoru(skorlar):
-    """Kareler arası deepfake skor dalgalanmasını (standart sapma) hesaplar."""
-    return float(np.std(skorlar)) if len(skorlar) >= 2 else 0.0
-
-# 6. YAPAY ZEKA MODELLERİNİN YÜKLENMESİ (@st.cache_resource)
-@st.cache_resource
-def modeli_yukle():
-    """
-    Eğitilmiş model dosyasını (.pth) ağırlıklarıyla birlikte yükler.
-    Sayfa her yenilendiğinde modeli baştan okumamak için RAM'e sabitler.
-    """
-    if not os.path.exists(MODEL_YOLU):
-        return None, None, 0.0, 1
-        
-    checkpoint = torch.load(MODEL_YOLU, map_location=DEVICE, weights_only=False)
-    mimari = checkpoint.get("mimari", "xception41")
-    
-    # Model oluşturulurken pretrained=False yapılır, kendi eğittiğimiz ağırlıklar yüklenir.
-    model = timm.create_model(mimari, pretrained=False, num_classes=2)
-    model.load_state_dict(checkpoint["model_state"])
-    model.eval().to(DEVICE)
-    
-    fake_idx = checkpoint.get("class_to_idx", {"Fake": 0, "Real": 1}).get("Fake", 0)
-    val_acc = checkpoint.get("val_acc", 0.0)
-    epoch = checkpoint.get("son_epoch", checkpoint.get("epoch", 1))
-    
-    return model, fake_idx, val_acc, epoch
-
-@st.cache_resource
-def mtcnn_yukle():
-    """Yüz tespiti için 3 aşamalı (P-Net, R-Net, O-Net) MTCNN ağını yükler."""
-    return MTCNN(keep_all=True, device=DEVICE, thresholds=[0.70, 0.75, 0.80])
+if "dur_analiz" not in st.session_state:
+    st.session_state["dur_analiz"] = False
 
 model, fake_idx, val_acc, egitim_epoch = modeli_yukle()
 mtcnn = mtcnn_yukle()
 
 if model is None:
-    st.error("Model dosyası bulunamadı. Lütfen kontrol ediniz.")
+    st.error("Model dosyasi bulunamadi. `src/deepfake_model.pth` konumunu kontrol ediniz.")
     st.stop()
 else:
     st.sidebar.markdown("---")
-    st.sidebar.success("Sistem Hazır")
+    st.sidebar.success("Sistem Hazir")
     st.sidebar.markdown(
         f"**Mimari:** xception41<br>"
-        f"**Doğruluk Oranı:** %{val_acc*100:.2f}<br>"
-        f"**Aktif Ünite:** {str(DEVICE).upper()}", 
+        f"**Dogruluk Orani:** %{val_acc*100:.2f}<br>"
+        f"**Egitim Epoch:** {egitim_epoch}<br>"
+        f"**Aktif Unite:** {str(DEVICE).upper()}<br>"
+        f"**Temperature (T):** {TEMPERATURE}",
         unsafe_allow_html=True
     )
 
-# Görüntüleri Xception modelinin beklediği boyuta ve matris yapısına çevirir.
-donusum = transforms.Compose([
-    transforms.ToPILImage(),
-    transforms.Resize((299, 299)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-])
-
-# 7. VİDEO YÜKLEME VE ANALİZ MOTORU
-yuklenen_dosya = st.file_uploader("Analiz edilecek videoyu yükleyiniz", type=["mp4", "avi", "mov"])
+yuklenen_dosya = st.file_uploader(
+    "Analiz edilecek videoyu yukleyiniz",
+    type=["mp4", "avi", "mov"]
+)
 
 if yuklenen_dosya is not None:
-    # Streamlit tarayıcıda çalıştığı için dosya baytları fiziksel geçici (temp) dosyaya yazılır.
     video_baytlari = yuklenen_dosya.read()
     tfile = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
     tfile.write(video_baytlari)
@@ -191,243 +74,144 @@ if yuklenen_dosya is not None:
         st.video(video_baytlari)
 
     with col2:
-        st.subheader("Canlı Analiz İzleme")
-        baslat = st.button("Analizi Başlat", type="primary")
+        st.subheader("Canli Analiz Izleme")
+        btn_col1, btn_col2 = st.columns(2)
+        with btn_col1:
+            baslat = st.button("Analizi Baslat", type="primary", use_container_width=True)
+        with btn_col2:
+            if st.button("Durdur", use_container_width=True):
+                st.session_state["dur_analiz"] = True
 
     if baslat:
-        try:
-            kamera = cv2.VideoCapture(tfile.name)
-            toplam_kare = int(kamera.get(cv2.CAP_PROP_FRAME_COUNT))
-            fps_orijinal = kamera.get(cv2.CAP_PROP_FPS)
+        st.session_state["dur_analiz"] = False
 
-            basarili, ilk_kare = kamera.read()
-            if not basarili:
-                st.error("Video çözümlenemedi.")
-                st.stop()
+        with col2:
+            kare_alani       = st.empty()
+            ilerleme_bar     = st.progress(0)
+            m1, m2           = st.columns(2)
+            canli_skor_metni = m1.empty()
+            fps_metni        = m2.empty()
 
-            # ÇÖZÜNÜRLÜK ZIRHI: 4K video yüklenirse MTCNN VRAM'i taşırmasın diye
-            # görüntü orantılı olarak maksimum 1280px genişliğe sıkıştırılır.
-            yukseklik_orj, genislik_orj = ilk_kare.shape[:2]
-            MAX_GENISLIK = 1280
-            if genislik_orj > MAX_GENISLIK:
-                oran = MAX_GENISLIK / genislik_orj
-                genislik = MAX_GENISLIK
-                yukseklik = int(yukseklik_orj * oran)
-            else:
-                genislik, yukseklik = genislik_orj, yukseklik_orj
+        sonuc = process_video(
+            tfile_name=tfile.name,
+            model=model,
+            mtcnn=mtcnn,
+            donusum=donusum,
+            fake_idx=fake_idx,
+            esik_degeri=esik_degeri,
+            frame_atlama=frame_atlama,
+            min_yuz_boyutu=min_yuz_boyutu,
+            temel_mtcnn_guven=temel_mtcnn_guven,
+            ui_kare_alani=kare_alani,
+            ui_ilerleme_bar=ilerleme_bar,
+            ui_canli_skor_metni=canli_skor_metni,
+            ui_fps_metni=fps_metni
+        )
 
-            kamera.set(cv2.CAP_PROP_POS_FRAMES, 0)
-            
-            # Analiz işlemi bittiğinde ekrana verilecek olan raporlanmış video nesnesi
-            islenmis_video_yolu = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-            fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-            video_kaydedici = cv2.VideoWriter(islenmis_video_yolu, fourcc, fps_orijinal, (genislik, yukseklik))
-
-            with col2:
-                kare_alani = st.empty()
-                ilerleme_bar = st.progress(0)
-                m1, m2 = st.columns(2)
-                canli_skor_metni = m1.empty()
-                fps_metni = m2.empty()
-
-            islenen_kare = 0
-            tum_skorlar = []
-            tum_kareler = []
-            son_cizimler = []
-            son_bilinen_skor = 0.0
-            yuzsuz_kare_sayaci = 0 
-            ai_islem_suresi = 0.0  
-            baslangic_zamani = time.time()
-
-            # VİDEO DÖNGÜSÜ (Piksel Akışı)
-            while kamera.isOpened():
-                basarili, kare = kamera.read()
-                if not basarili: break
-
-                if kare.shape[1] > MAX_GENISLIK:
-                    kare = cv2.resize(kare, (genislik, yukseklik))
-
-                islenen_kare += 1
-
-                # Her kare işlenmez (Frame Skip) - Gereksiz işlem yükünü azaltır
-                if islenen_kare % frame_atlama == 0:
-                    ai_start = time.time() 
-                    # OpenCV BGR okur, PyTorch modelleri RGB bekler. Renk uzayı dönüştürülür.
-                    kare_rgb = cv2.cvtColor(kare, cv2.COLOR_BGR2RGB)
-                    
-                    try:
-                        boxes, probs = mtcnn.detect(kare_rgb)
-                    except Exception:
-                        boxes, probs = None, None
-
-                    anlik_cizimler = []
-                    kare_en_yuksek = 0.0
-
-                    if boxes is not None:
-                        yuzsuz_kare_sayaci = 0 
-                        if len(boxes) > MAX_BATCH_FACE:
-                            boxes, probs = boxes[:MAX_BATCH_FACE], probs[:MAX_BATCH_FACE]
-
-                        face_tensors, face_coords = [], []
-
-                        for box, prob in zip(boxes, probs):
-                            if prob is None: continue
-
-                            x1, y1, x2, y2 = [int(b) for b in box]
-                            
-                            # DOMAIN SHIFT KORUMASI (Yüz Marj Algoritması - %10 Altın Oran)
-                          
-                            # Yüzü sıfıra sıfır kesmek yerine, etrafından %10'luk bir pay bırakılarak
-                            # deepfake manipülasyonlarının en belirgin olduğu maske birleşim 
-                            # yerleri (çene hattı, alın) analize dahil edilir.
-                            w = x2 - x1
-                            h = y2 - y1
-                            margin_x = int(w * 0.10)  
-                            margin_y = int(h * 0.10)  
-
-                            x1 = max(0, x1 - margin_x)
-                            y1 = max(0, y1 - margin_y)
-                            x2 = min(genislik, x2 + margin_x)
-                            y2 = min(yukseklik, y2 + margin_y)
-
-                            if (x2 - x1) < min_yuz_boyutu or (y2 - y1) < min_yuz_boyutu: continue
-
-                            # Dinamik Güvenlik Duvarı: Kadraj merkezindeki yüzlere yüksek hassasiyet gösterilir
-                            mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-                            if (genislik * 0.20 < mx < genislik * 0.80 and yukseklik * 0.20 < my < yukseklik * 0.80):
-                                esik_guven = temel_mtcnn_guven + 0.10
-                            else:
-                                esik_guven = temel_mtcnn_guven
-
-                            if prob < min(esik_guven, 0.99): continue
-
-                            yuz = kare_rgb[y1:y2, x1:x2]
-                            if yuz.size == 0: continue
-
-                            face_tensors.append(donusum(yuz))
-                            face_coords.append((x1, y1, x2, y2))
-
-                        if face_tensors:
-                            # Bulunan yüzler, GPU'da tek tek değil topluca işlenmek üzere yığına (batch) eklenir
-                            batch_tensor = torch.stack(face_tensors).to(DEVICE)
-                            
-                            # inference_mode: Model eğitim modundan çıkarılır, gradyan hesaplaması kapatılarak hız kazanılır
-                            with torch.inference_mode():
-                                if USE_AMP:
-                                    with torch.autocast(device_type="cuda", dtype=torch.float16):
-                                        cikti = model(batch_tensor)
-                                else:
-                                    cikti = model(batch_tensor)
-
-                                # Softmax ile ham lojitler olasılığa çevrilir, T=1.0 ile aşırı özgüven kırılır
-                                olasilik = F.softmax(cikti / TEMPERATURE, dim=1)
-                                fake_skorlari = olasilik[:, fake_idx].tolist()
-
-                            for (x1, y1, x2, y2), skor in zip(face_coords, fake_skorlari):
-                                if skor > kare_en_yuksek:
-                                    kare_en_yuksek = skor
-                                etiket = f"SAHTE %{skor*100:.1f}" if skor > esik_degeri else f"GERCEK %{(1-skor)*100:.1f}"
-                                anlik_cizimler.append((x1, y1, x2, y2, etiket, skor))
-                    else:
-                        yuzsuz_kare_sayaci += frame_atlama
-
-                    # FORWARD-FILL LİMİTİ: Kişi kafasını aniden çevirdiğinde veya elini yüzüne kapattığında
-                    # grafiğin 0'a çakılmasını önlemek için sistem son skoru bir süre hafızada tutar.
-                    if kare_en_yuksek > 0.0:
-                        son_bilinen_skor = kare_en_yuksek
-                    elif yuzsuz_kare_sayaci > KAYIP_LIMITI:
-                        son_bilinen_skor = 0.0 
-
-                    ai_islem_suresi += (time.time() - ai_start) 
-                    tum_skorlar.append(son_bilinen_skor * 100)
-                    tum_kareler.append(islenen_kare)
-                    son_cizimler = anlik_cizimler
-
-                # EKRAN ÇİZİM BLOĞU: Her bir yüze ait kutular ve metinler dinamik renklerle çizilir
-                for (x1, y1, x2, y2, etiket, skor) in son_cizimler:
-                    renk_bgr = skora_gore_renk(skor, esik_degeri, bgr=True)
-                    cv2.rectangle(kare, (x1, y1), (x2, y2), renk_bgr, 3)
-                    (tw, th), _ = cv2.getTextSize(etiket, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
-                    cv2.rectangle(kare, (x1, y1 - th - 10), (x1 + tw + 5, y1), renk_bgr, -1)
-                    cv2.putText(kare, etiket, (x1 + 2, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
-
-                video_kaydedici.write(kare)
-
-                # UI THROTTLING: Saniyede 30 kare basmak tarayıcıyı kilitler. Bu blok
-                # arayüz güncellemelerini seyreltip sistemi stabil tutar.
-                if islenen_kare % UI_GUNCELLEME_FREKANSI == 0:
-                    MAX_GOSTERIM = 640
-                    if genislik > MAX_GOSTERIM:
-                        oran_g = MAX_GOSTERIM / genislik
-                        kare_gosterim = cv2.resize(kare, (MAX_GOSTERIM, int(yukseklik * oran_g)))
-                    else:
-                        kare_gosterim = kare
-                    kare_alani.image(cv2.cvtColor(kare_gosterim, cv2.COLOR_BGR2RGB), channels="RGB", use_container_width=True)
-
-                if islenen_kare % 5 == 0:
-                    ilerleme_bar.progress(min(islenen_kare / max(toplam_kare, 1), 1.0))
-                    gecen_sure = time.time() - baslangic_zamani
-                    sistem_fps = islenen_kare / gecen_sure if gecen_sure > 0 else 0
-                    
-                    fps_metni.metric("Sistem FPS", f"{sistem_fps:.1f}")
-                    canli_skor_metni.metric("Anlık Skor", f"%{son_bilinen_skor*100:.1f}")
-
-            kamera.release()
-            video_kaydedici.release()
-            if torch.cuda.is_available(): torch.cuda.empty_cache()
-
-            # 8. SONUÇ VE RAPORLAMA EKRANI
+        if sonuc.get("hata"):
+            st.error(f"Bir hata olustu: {sonuc['hata']}")
+        else:
             st.divider()
-            st.success("Analiz işlemi tamamlandı.")
-            st.subheader("Final Video Kaydı")
-            with open(islenmis_video_yolu, 'rb') as f:
-                st.video(f.read())
+            st.success("Analiz islemi tamamlandi.")
+
+            st.subheader("Final Video Kaydi")
+            if sonuc["islenmis_video_yolu"]:
+                with open(sonuc["islenmis_video_yolu"], "rb") as f:
+                    st.video(f.read())
 
             st.subheader("Akademik Analiz Raporu")
+
+            tum_skorlar = sonuc["tum_skorlar"]
+            gercek_tespitler = sonuc["gercek_tespitler"]
+            tum_kareler = sonuc["tum_kareler"]
+            ai_islem_suresi = sonuc["ai_islem_suresi"]
+            mtcnn_hata_sayaci = sonuc["mtcnn_hata_sayaci"]
+            sistem_fps = sonuc["sistem_fps"]
+
             if len(tum_skorlar) > 0:
-                mean_skor = float(np.mean(tum_skorlar))
-                percentile_85_skor = float(np.percentile(tum_skorlar, 85))
-                
-                # HİBRİT P85 SKORLAMASI GÜNCELLEMESİ (Daha Dengeli)
-                # Videonun geneline (%60) daha fazla, anlık risklere (%40) daha az ağırlık verilir.
-                # Böylece motion blur kaynaklı anlık yanlış alarmlar (false positive) engellenir.
-                final_skor = (0.4 * percentile_85_skor) + (0.6 * mean_skor)
-                max_skor = float(np.max(tum_skorlar))
-                
-                gercek_ai_fps = (len(tum_skorlar)) / ai_islem_suresi if ai_islem_suresi > 0 else 0
+                veri_kaynagi       = gercek_tespitler if len(gercek_tespitler) > 0 else tum_skorlar
+                mean_skor          = float(np.mean(veri_kaynagi))
+                percentile_85_skor = float(np.percentile(veri_kaynagi, 85))
+
+                final_skor  = (0.4 * percentile_85_skor) + (0.6 * mean_skor)
+                max_skor    = float(np.max(veri_kaynagi))
+                tutarsizlik = temporal_tutarsizlik_skoru(tum_skorlar)
+
+                gercek_ai_fps = (
+                    len(tum_skorlar) / ai_islem_suresi
+                    if ai_islem_suresi > 0 else 0.0
+                )
 
                 if final_skor > (esik_degeri * 100):
-                    st.error(f"DİKKAT: Deepfake manipülasyonu tespit edildi. (Skor: %{final_skor:.1f})")
+                    st.markdown(
+                        f'<div class="alert-fake">DIKKAT: Deepfake manipulasyonu tespit edildi &nbsp;·&nbsp; '
+                        f'Hibrit P85 Skoru: <b>%{final_skor:.1f}</b></div>',
+                        unsafe_allow_html=True
+                    )
                 else:
-                    st.success(f"GÜVENLİ: Belirgin bir manipülasyon tespit edilmedi. (Skor: %{final_skor:.1f})")
+                    st.markdown(
+                        f'<div class="alert-real">GUVENLI: Belirgin bir manipulasyon tespit edilmedi &nbsp;·&nbsp; '
+                        f'Hibrit P85 Skoru: <b>%{final_skor:.1f}</b></div>',
+                        unsafe_allow_html=True
+                    )
+
+                st.markdown("<br>", unsafe_allow_html=True)
 
                 c1, c2, c3, c4 = st.columns(4)
                 c1.metric("Genel Skor (Hibrit P85)", f"%{final_skor:.1f}")
-                c2.metric("Maksimum Anlık Skor", f"%{max_skor:.1f}")
-                c3.metric("Saf AI Çıkarım Hızı", f"{gercek_ai_fps:.1f} FPS")
-                c4.metric("Toplam Sistem Hızı", f"{sistem_fps:.1f} FPS")
+                c2.metric("85. Persentil Skoru", f"%{percentile_85_skor:.1f}")
+                c3.metric("Ortalama Skor", f"%{mean_skor:.1f}")
+                c4.metric("Maksimum Anlik Skor", f"%{max_skor:.1f}")
+
+                c5, c6, c7, c8 = st.columns(4)
+                c5.metric("Temporal Tutarsizlik (STD)", f"{tutarsizlik:.2f}")
+                c6.metric("Yuz Tespit Edilen Kare", f"{len(gercek_tespitler)}")
+                c7.metric("Saf AI Cikarim Hizi", f"{gercek_ai_fps:.1f} FPS")
+                c8.metric("Toplam Sistem Hizi", f"{sistem_fps:.1f} FPS")
+
+                if tutarsizlik > 20:
+                    st.markdown(
+                        f'<div class="alert-info"><b>Yuksek temporal tutarsizlik (STD={tutarsizlik:.1f})</b> — '
+                        f'Video boyunca skor buyuk dalgalanmalar gosteriyor. '
+                        f'Bu, anlik veya kesintili bir deepfake manipulasyonuna isaret edebilir.</div>',
+                        unsafe_allow_html=True
+                    )
+                elif tutarsizlik < 5 and mean_skor > esik_degeri * 100:
+                    st.markdown(
+                        f'<div class="alert-info"><b>Dusuk temporal tutarsizlik (STD={tutarsizlik:.1f}) + yuksek ortalama</b> — '
+                        f'Tutarli ve surekli bir deepfake manipulasyonu profili.</div>',
+                        unsafe_allow_html=True
+                    )
+
+                if mtcnn_hata_sayaci > 0:
+                    st.warning(f"MTCNN, {mtcnn_hata_sayaci} karede hata uretti. Bu kareler atlandi.")
 
                 if len(tum_skorlar) > 1:
-                    fig = go.Figure()
-                    fig.add_trace(go.Scatter(x=tum_kareler, y=tum_skorlar, mode="lines", name="Ham Skor", line=dict(color="rgba(220,20,60,0.3)", width=1)))
+                    plot_timeline(tum_kareler, tum_skorlar, esik_degeri, percentile_85_skor)
 
-                    if SCIPY_AVAILABLE and len(tum_skorlar) >= 7:
-                        pencere = min(11, len(tum_skorlar))
-                        if pencere % 2 == 0: pencere -= 1
-                        if pencere >= 5:
-                            # Sinyal Gürültü Filtresi: Eğrinin zaman serisindeki genel yönelimini hesaplar
-                            smooth = savgol_filter(tum_skorlar, window_length=pencere, polyorder=2)
-                            fig.add_trace(go.Scatter(x=tum_kareler, y=smooth.tolist(), mode="lines", name="Savitzky-Golay Eğrisi", line=dict(color="crimson", width=3)))
-
-                    fig.add_hline(y=esik_degeri * 100, line_dash="dash", line_color="orange")
-                    fig.update_layout(title="Zaman Çizelgesi Deepfake Analizi", xaxis_title="Kare Numarası", yaxis_title="Sahte Olasılığı (%)", yaxis=dict(range=[0, 100]), height=450)
-                    st.plotly_chart(fig, use_container_width=True)
-
-        finally:
-            # MEMORY LEAK KORUMASI: Sistem beklenmedik şekilde çökse bile sunucudaki (.temp)
-            # gizli dosyalar silinerek sabit diskin dolması (Hard Drive bloat) engellenir.
-            try:
-                if 'tfile' in locals() and os.path.exists(tfile.name): os.unlink(tfile.name)
-                if 'islenmis_video_yolu' in locals() and os.path.exists(islenmis_video_yolu): os.unlink(islenmis_video_yolu)
-            except Exception:
-                pass
+                st.markdown("---")
+                rapor_verisi = {
+                    "sonuc"                     : "DEEPFAKE" if final_skor > (esik_degeri * 100) else "GERCEK",
+                    "hibrit_p85_skoru_pct"      : round(final_skor, 2),
+                    "p85_skoru_pct"             : round(percentile_85_skor, 2),
+                    "ortalama_skor_pct"         : round(mean_skor, 2),
+                    "max_anlik_skor_pct"        : round(max_skor, 2),
+                    "temporal_tutarsizlik_std"  : round(tutarsizlik, 2),
+                    "esik_degeri_pct"           : round(esik_degeri * 100, 1),
+                    "analiz_edilen_kare_sayisi" : len(tum_skorlar),
+                    "yuz_tespit_edilen_kare"    : len(gercek_tespitler),
+                    "frame_skip"                : frame_atlama,
+                    "mtcnn_hata_sayisi"         : mtcnn_hata_sayaci,
+                    "model_mimari"              : "xception41",
+                    "model_val_acc_pct"         : round(val_acc * 100, 2),
+                    "egitim_epoch"              : egitim_epoch,
+                    "temperature"               : TEMPERATURE,
+                    "cihaz"                     : str(DEVICE),
+                }
+                st.download_button(
+                    label="Analiz Raporunu Indir (JSON)",
+                    data=json.dumps(rapor_verisi, ensure_ascii=False, indent=2),
+                    file_name="deepfake_analiz_raporu.json",
+                    mime="application/json",
+                    use_container_width=True
+                )

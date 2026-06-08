@@ -9,10 +9,11 @@ DEĞİŞİKLİK GEÇMİŞİ:
   v3 → v4: AMP (FP16) eklendi, GradScaler, cudnn.benchmark.
   v4 → v5: GradScaler import düzeltildi, optimizer uyuşmazlığı çözüldü.
   v5 → v6: EPOCHS 15 yapıldı, Label Smoothing eklendi, Güçlü Augmentation.
-  v6 → v7 (KAGGLE & GÜVENLİK GÜNCELLEMESİ):
-    - Çift GPU desteği eklendi (nn.DataParallel). Kaggle T4x2 için.
-    - Her epoch sonu koşulsuz yedekleme (deepfake_model_latest.pth) eklendi.
-      Böylece Kaggle kesilse bile anında en son epoch'tan devam edilebilir.
+  v6 → v7 (FİNAL & KAGGLE OPTİMİZASYONU):
+    - NUM_WORKERS = 4 yapılarak işlemci veri okuma darboğazı çözüldü.
+    - BATCH_SIZE = 64 yapılarak çift GPU (T4 x2) tam kapasiteye alındı.
+    - nn.DataParallel otomatik çift ekran kartı dağıtımı entegre edildi.
+    - deepfake_model_latest.pth ile kesintilere karşı her epoch sonu koşulsuz yedekleme eklendi.
 
 KULLANIM:
   python train.py           # Normal eğitim
@@ -37,13 +38,13 @@ sys.stdout.reconfigure(line_buffering=True)
 # ─────────────────────────────────────────────
 VERI_DIZINI = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "deepfake_data", "Dataset"))
 MODEL_KAYIT = os.path.join(os.path.dirname(__file__), "deepfake_model.pth")
-MODEL_SON_KAYIT = os.path.join(os.path.dirname(__file__), "deepfake_model_latest.pth") # v7 YENİ: Güvenlik yedeği
+MODEL_SON_KAYIT = os.path.join(os.path.dirname(__file__), "deepfake_model_latest.pth")
 
 EPOCHS      = 15
-BATCH_SIZE  = 32
+BATCH_SIZE  = 64  # Çift GPU'da toplam 128 görüntü işlenir (Hızlı ve güvenli)
 LR          = 1e-4
 IMG_SIZE    = 299
-NUM_WORKERS = 0
+NUM_WORKERS = 4   # Disk okuma darboğazını çözen paralel çekirdek sayısı
 DEVICE      = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 USE_AMP     = torch.cuda.is_available()
 RESUME      = "--resume" in sys.argv
@@ -62,7 +63,7 @@ print(f"  Epoch : {EPOCHS}")
 print(f"{'='*55}\n")
 
 # ─────────────────────────────────────────────
-#  VERİ
+#  VERİ DÖNÜŞÜMLERİ (AUGMENTATION)
 # ─────────────────────────────────────────────
 egitim_donusum = transforms.Compose([
     transforms.Resize((320, 320)),
@@ -92,7 +93,7 @@ print(f"Eğitim         : {len(egitim_veri):,} görüntü")
 print(f"Doğrulama      : {len(dogrulama_veri):,} görüntü\n")
 
 # ─────────────────────────────────────────────
-#  MODEL, OPTIMIZER, SCALER
+#  MODEL, OPTIMIZER, SCALER KURULUMU
 # ─────────────────────────────────────────────
 model = timm.create_model("xception41", pretrained=not RESUME, num_classes=2)
 
@@ -102,12 +103,12 @@ scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_m
 scaler = torch.cuda.amp.GradScaler(enabled=USE_AMP)
 
 # ─────────────────────────────────────────────
-#  RESUME VE MULTI-GPU KONTROLÜ
+#  RESUME VE ÇİFT GPU KONTROLÜ
 # ─────────────────────────────────────────────
 baslangic_epoch = 1
 en_iyi_acc      = 0.0
 
-# v7 YENİ: Çift GPU (T4x2) için DataParallel Kullanımı
+# Çift GPU Algılandığında Modeli DataParallel ile Sarmala
 if torch.cuda.device_count() > 1:
     print(f"Harika! {torch.cuda.device_count()} adet GPU kullanılıyor (DataParallel).")
     model = nn.DataParallel(model)
@@ -115,7 +116,7 @@ if torch.cuda.device_count() > 1:
 model = model.to(DEVICE)
 print(f"Model {DEVICE} cihazına taşındı.")
 
-# v7 YENİ: Önce en son yedeklenen epoch'u ara, yoksa en iyi modeli ara
+# Önce en son güncel yedeği kontrol et, yoksa en iyi modele bak
 hedef_checkpoint = MODEL_SON_KAYIT if os.path.exists(MODEL_SON_KAYIT) else MODEL_KAYIT
 
 if RESUME and os.path.exists(hedef_checkpoint):
@@ -172,7 +173,7 @@ for epoch in range(baslangic_epoch, EPOCHS + 1):
 
     egitim_acc = dogru / len(egitim_veri)
 
-    # — Doğrulama —
+    # — Doğrulama (Validation) —
     model.eval()
     val_dogru = 0
     with torch.no_grad():
@@ -191,7 +192,7 @@ for epoch in range(baslangic_epoch, EPOCHS + 1):
 
     scheduler.step(epoch + (1 / len(egitim_yukleme)))
 
-    # v7 YENİ: Her epoch sonunda koşulsuz genel yedekleme oluşturulur (Kaggle kesilirse diye)
+    # Koşulsuz Genel Durum Yedeklemesi (Kaggle kesintilerine karşı koruma kalkanı)
     os.makedirs(os.path.dirname(MODEL_SON_KAYIT), exist_ok=True)
     checkpoint_data = {
         "model_state":     model.state_dict(),
@@ -208,7 +209,7 @@ for epoch in range(baslangic_epoch, EPOCHS + 1):
     torch.save(checkpoint_data, MODEL_SON_KAYIT)
     print(f"  ✓ Epoch {epoch} genel durumu 'latest' olarak yedeklendi.", flush=True)
 
-    # v7 YENİ: Eğer model kendi rekorunu kırdıysa 'best' olarak da ayrıca kaydedilir
+    # En İyi Model Rekor Kırdığında Kaydedilir
     if val_acc > en_iyi_acc:
         en_iyi_acc = val_acc
         torch.save(checkpoint_data, MODEL_KAYIT)

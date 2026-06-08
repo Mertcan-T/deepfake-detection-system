@@ -133,7 +133,7 @@ optimizer  = optim.Adam(model.parameters(), lr=LR, weight_decay=1e-5)
 # Resume ile uyumludur (scheduler state checkpoint'e kaydedilir).
 scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=1e-6)
 
-scaler = torch.amp.GradScaler('cuda', enabled=USE_AMP)
+scaler = torch.cuda.amp.GradScaler(enabled=USE_AMP)
 
 # ─────────────────────────────────────────────
 #  RESUME KONTROLÜ

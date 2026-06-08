@@ -4,24 +4,15 @@
 ============================================================
 DEĞİŞİKLİK GEÇMİŞİ:
 
-  v1 → v2: InceptionResnetV1 → xception41, CUDA, Transfer Learning,
-           EarlyStopping, Checkpoint formatı, PowerShell buffer.
+  v1 → v2: InceptionResnetV1 → xception41, CUDA, Transfer Learning.
   v2 → v3: RESUME özelliği, optimizer/scheduler state kaydı.
   v3 → v4: AMP (FP16) eklendi, GradScaler, cudnn.benchmark.
-  v4 → v5 (FİNAL): GradScaler import düzeltildi, optimizer device uyuşmazlığı çözüldü.
-  v5 → v6 (GELİŞTİRİLMİŞ):
-    - EPOCHS: 5 → 15 (daha iyi genelleme)
-    - Label Smoothing: CrossEntropyLoss(label_smoothing=0.1) eklendi.
-      Model aşırı özgüvenli "hard" tahminler yerine daha kalibre edilmiş
-      olasılıklar üretiyor. Overfitting'e karşı implicit regularization.
-    - Güçlendirilmiş Augmentation:
-        * GaussianBlur → Video sıkıştırma artefaktlarını ve motion blur'u simüle eder.
-        * RandomErasing → Kısmi yüz kapanmalarına (occlusion) karşı dayanıklılık.
-        * RandomGrayscale → Renk bağımsız özellikler öğrenmesini teşvik eder.
-        * Daha güçlü ColorJitter parametreleri.
-    - Scheduler: ReduceLROnPlateau → CosineAnnealingWarmRestarts
-      Periyodik LR artışları lokal minimumlardan çıkmayı sağlar.
-      Resume ile uyumludur.
+  v4 → v5: GradScaler import düzeltildi, optimizer uyuşmazlığı çözüldü.
+  v5 → v6: EPOCHS 15 yapıldı, Label Smoothing eklendi, Güçlü Augmentation.
+  v6 → v7 (KAGGLE & GÜVENLİK GÜNCELLEMESİ):
+    - Çift GPU desteği eklendi (nn.DataParallel). Kaggle T4x2 için.
+    - Her epoch sonu koşulsuz yedekleme (deepfake_model_latest.pth) eklendi.
+      Böylece Kaggle kesilse bile anında en son epoch'tan devam edilebilir.
 
 KULLANIM:
   python train.py           # Normal eğitim
@@ -46,8 +37,8 @@ sys.stdout.reconfigure(line_buffering=True)
 # ─────────────────────────────────────────────
 VERI_DIZINI = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "deepfake_data", "Dataset"))
 MODEL_KAYIT = os.path.join(os.path.dirname(__file__), "deepfake_model.pth")
+MODEL_SON_KAYIT = os.path.join(os.path.dirname(__file__), "deepfake_model_latest.pth") # v7 YENİ: Güvenlik yedeği
 
-# v6: Epoch sayısı artırıldı — transfer learning ile 15 epoch yeterli genelleme sağlar
 EPOCHS      = 15
 BATCH_SIZE  = 32
 LR          = 1e-4
@@ -71,31 +62,17 @@ print(f"  Epoch : {EPOCHS}")
 print(f"{'='*55}\n")
 
 # ─────────────────────────────────────────────
-#  VERİ — v6 Güçlendirilmiş Augmentation
+#  VERİ
 # ─────────────────────────────────────────────
 egitim_donusum = transforms.Compose([
-    # Hafif büyütme sonrası merkez kırpma → pozisyon çeşitliliği
     transforms.Resize((320, 320)),
     transforms.RandomCrop(IMG_SIZE),
-
     transforms.RandomHorizontalFlip(),
-
-    # v6: Daha güçlü renk dönüşümleri
     transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2, hue=0.05),
-
-    # v6 YENİ: Motion blur ve video sıkıştırma artefaktlarını simüle eder.
-    # Eğitim veri seti statik görüntülerden oluştuğundan bu augmentation
-    # video karelerine domain shift'i azaltır.
     transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 2.0)),
-
-    # v6 YENİ: Renk bağımsız özellikler öğrenmesini teşvik eder (%5 olasılıkla)
     transforms.RandomGrayscale(p=0.05),
-
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-
-    # v6 YENİ: Kısmi yüz kapanmalarına (occlusion) karşı dayanıklılık.
-    # Gerçek video senaryolarında eller, saç veya nesneler yüzü kısmen kapatabilir.
     transforms.RandomErasing(p=0.10, scale=(0.02, 0.12), ratio=(0.3, 3.3)),
 ])
 
@@ -119,58 +96,45 @@ print(f"Doğrulama      : {len(dogrulama_veri):,} görüntü\n")
 # ─────────────────────────────────────────────
 model = timm.create_model("xception41", pretrained=not RESUME, num_classes=2)
 
-# v6 YENİ: Label Smoothing
-# Modelin "hard" 0/1 tahminler yerine kalibre edilmiş olasılıklar üretmesini sağlar.
-# epsilon=0.1 → hedef etiketler [0.05, 0.95] aralığına yumuşatılır.
-# Implicit regularization olarak çalışır; overfitting'i azaltır.
 kayip_fonk = nn.CrossEntropyLoss(label_smoothing=0.1)
-
 optimizer  = optim.Adam(model.parameters(), lr=LR, weight_decay=1e-5)
-
-# v6 YENİ: CosineAnnealingWarmRestarts
-# ReduceLROnPlateau'ya göre avantajı: periyodik LR artışları lokal minimumlardan
-# çıkmayı sağlar. T_0=5 → her 5 epoch'ta bir LR sıfırlanır.
-# Resume ile uyumludur (scheduler state checkpoint'e kaydedilir).
 scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=5, T_mult=1, eta_min=1e-6)
-
 scaler = torch.cuda.amp.GradScaler(enabled=USE_AMP)
 
 # ─────────────────────────────────────────────
-#  RESUME KONTROLÜ
+#  RESUME VE MULTI-GPU KONTROLÜ
 # ─────────────────────────────────────────────
 baslangic_epoch = 1
 en_iyi_acc      = 0.0
 
-# MİMARİ DÜZELTME: Model her zaman checkpoint yüklenmeden ÖNCE GPU'ya taşınır!
+# v7 YENİ: Çift GPU (T4x2) için DataParallel Kullanımı
+if torch.cuda.device_count() > 1:
+    print(f"Harika! {torch.cuda.device_count()} adet GPU kullanılıyor (DataParallel).")
+    model = nn.DataParallel(model)
+
 model = model.to(DEVICE)
 print(f"Model {DEVICE} cihazına taşındı.")
 
-if RESUME and os.path.exists(MODEL_KAYIT):
-    print(f"Checkpoint yükleniyor: {MODEL_KAYIT}")
+# v7 YENİ: Önce en son yedeklenen epoch'u ara, yoksa en iyi modeli ara
+hedef_checkpoint = MODEL_SON_KAYIT if os.path.exists(MODEL_SON_KAYIT) else MODEL_KAYIT
 
-    checkpoint = torch.load(MODEL_KAYIT, map_location=DEVICE, weights_only=False)
+if RESUME and os.path.exists(hedef_checkpoint):
+    print(f"Checkpoint yükleniyor: {hedef_checkpoint}")
+    checkpoint = torch.load(hedef_checkpoint, map_location=DEVICE, weights_only=False)
 
-    # 1. Model Ağırlıkları
     model.load_state_dict(checkpoint["model_state"])
     en_iyi_acc = checkpoint.get("val_acc", 0.0)
 
-    # 2. Optimizer
     if "optimizer_state" in checkpoint:
         optimizer.load_state_dict(checkpoint["optimizer_state"])
-        print("  ✓ Optimizer state yüklendi")
-
-    # 3. Scheduler ve Scaler
     if "scheduler_state" in checkpoint:
         scheduler.load_state_dict(checkpoint["scheduler_state"])
-        print("  ✓ Scheduler state yüklendi")
-
     if "scaler_state" in checkpoint and USE_AMP:
         scaler.load_state_dict(checkpoint["scaler_state"])
-        print("  ✓ GradScaler state yüklendi")
 
     baslangic_epoch = checkpoint.get("son_epoch", checkpoint.get("epoch", 1)) + 1
     print(f"  ✓ Epoch {baslangic_epoch}'dan devam ediliyor")
-    print(f"  ✓ Mevcut en iyi Val Acc: %{en_iyi_acc*100:.2f}\n")
+    print(f"  ✓ Kaydedilmiş en iyi Val Acc: %{en_iyi_acc*100:.2f}\n")
 elif RESUME:
     print("Uyarı: Checkpoint bulunamadı, sıfırdan başlanıyor.\n")
 
@@ -222,31 +186,33 @@ for epoch in range(baslangic_epoch, EPOCHS + 1):
     sure      = time.time() - t0
     mevcut_lr = optimizer.param_groups[0]['lr']
 
-    print(f"\nEpoch {epoch}/{EPOCHS} | "
-          f"Eğitim Acc: %{egitim_acc*100:.2f} | "
-          f"Val Acc: %{val_acc*100:.2f} | "
-          f"LR: {mevcut_lr:.2e} | "
-          f"Süre: {sure/60:.1f}dk", flush=True)
+    print(f"\nEpoch {epoch}/{EPOCHS} | Eğitim Acc: %{egitim_acc*100:.2f} | "
+          f"Val Acc: %{val_acc*100:.2f} | LR: {mevcut_lr:.2e} | Süre: {sure/60:.1f}dk", flush=True)
 
-    # CosineAnnealingWarmRestarts her epoch sonunda güncellenir
     scheduler.step(epoch + (1 / len(egitim_yukleme)))
 
+    # v7 YENİ: Her epoch sonunda koşulsuz genel yedekleme oluşturulur (Kaggle kesilirse diye)
+    os.makedirs(os.path.dirname(MODEL_SON_KAYIT), exist_ok=True)
+    checkpoint_data = {
+        "model_state":     model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
+        "scheduler_state": scheduler.state_dict(),
+        "scaler_state":    scaler.state_dict(),
+        "mimari":          "xception41",
+        "num_classes":     2,
+        "class_to_idx":    egitim_veri.class_to_idx,
+        "val_acc":         val_acc,
+        "epoch":           epoch,
+        "son_epoch":       epoch,
+    }
+    torch.save(checkpoint_data, MODEL_SON_KAYIT)
+    print(f"  ✓ Epoch {epoch} genel durumu 'latest' olarak yedeklendi.", flush=True)
+
+    # v7 YENİ: Eğer model kendi rekorunu kırdıysa 'best' olarak da ayrıca kaydedilir
     if val_acc > en_iyi_acc:
         en_iyi_acc = val_acc
-        os.makedirs(os.path.dirname(MODEL_KAYIT), exist_ok=True)
-        torch.save({
-            "model_state":     model.state_dict(),
-            "optimizer_state": optimizer.state_dict(),
-            "scheduler_state": scheduler.state_dict(),
-            "scaler_state":    scaler.state_dict(),
-            "mimari":          "xception41",
-            "num_classes":     2,
-            "class_to_idx":    egitim_veri.class_to_idx,
-            "val_acc":         val_acc,
-            "epoch":           epoch,
-            "son_epoch":       epoch,
-        }, MODEL_KAYIT)
-        print(f"  ✓ En iyi model kaydedildi → Val Acc: %{val_acc*100:.2f}", flush=True)
+        torch.save(checkpoint_data, MODEL_KAYIT)
+        print(f"  ⚡ En iyi model güncellendi → Val Acc: %{val_acc*100:.2f}", flush=True)
 
 print(f"\n{'='*55}")
 print(f"  Eğitim tamamlandı!")

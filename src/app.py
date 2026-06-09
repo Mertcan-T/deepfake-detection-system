@@ -9,6 +9,7 @@ import streamlit as st
 import tempfile
 import json
 import numpy as np
+from datetime import datetime
 
 from config import DEVICE, TEMPERATURE, UI_GUNCELLEME_FREKANSI
 from utils import temporal_tutarsizlik_skoru
@@ -191,6 +192,7 @@ if yuklenen_dosya is not None:
 
                 st.markdown("---")
                 rapor_verisi = {
+                    "analiz_tarihi"             : datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                     "sonuc"                     : "DEEPFAKE" if final_skor > (esik_degeri * 100) else "GERCEK",
                     "hibrit_p85_skoru_pct"      : round(final_skor, 2),
                     "p85_skoru_pct"             : round(percentile_85_skor, 2),

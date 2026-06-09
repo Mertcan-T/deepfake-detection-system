@@ -197,7 +197,7 @@ Eğitim sırasında aşağıdaki augmentation teknikleri uygulanmıştır:
 
 ## Performans Sonuçları
 
-### v1 Modeli (5 Epoch, Temel Augmentation)
+### Model (5 Epoch, Temel Augmentation)
 
 | Metrik              | Sonuç                      |
 | ------------------- | -------------------------- |
@@ -207,19 +207,6 @@ Eğitim sırasında aşağıdaki augmentation teknikleri uygulanmıştır:
 | Mimari              | Xception41                 |
 | Framework           | PyTorch                    |
 | Donanım             | NVIDIA RTX 4050 Laptop GPU |
-
-### v2 Modeli (15 Epoch, Güçlendirilmiş Strateji)
-
-| Metrik              | Sonuç                          |
-| ------------------- | ------------------------------ |
-| Epoch Sayısı        | 15                             |
-| Kayıp Fonksiyonu    | CrossEntropy + Label Smoothing |
-| Scheduler           | CosineAnnealingWarmRestarts    |
-| Mimari              | Xception41                     |
-| Framework           | PyTorch                        |
-| Donanım             | NVIDIA RTX 4050 Laptop GPU     |
-
-> Not: v2 model eğitim sonuçları tamamlandıktan sonra buraya eklenecektir.
 
 ---
 

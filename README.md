@@ -228,6 +228,7 @@ pip install -r requirements.txt
 ### 3. Model Dosyasını Yerleştirin
 
 `deepfake_model.pth` dosyası GitHub dosya boyutu sınırları nedeniyle repoya eklenmemiştir. Ama aşağıda verilen drive linkine tıklayarak model dosyasını indirebilirsiniz:
+
 Drive Linki: https://drive.google.com/file/d/1M8L-Okv8QrzbJabnbhySyQ9BM9jngKZK/view?usp=sharing
 
 Model dosyasını indirdikten sonra .pth uzantılı dosyayı aşağıdaki konuma yerleştirin:
